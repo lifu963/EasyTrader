@@ -1,7 +1,10 @@
 import os
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import List, Dict, Tuple
+import inspect
+import re
+from typing import List, Dict, Tuple, Type
+import yaml
 
 import gradio as gr
 import pandas as pd
@@ -154,6 +157,10 @@ class BaseInvestmentStrategy(ABC):
     """
     投资策略基类，所有策略都应继承该类并实现 apply 方法。
     """
+    def __init__(self):
+        self.name = ""  # 策略名称
+        self.description = ""  # 策略原理
+        self.parameters = {}  # 参数说明 {参数名: (说明, 类型, 默认值)}
 
     @abstractmethod
     def apply(self, data: pd.Series, **kwargs) -> pd.Series:
@@ -164,49 +171,119 @@ class BaseInvestmentStrategy(ABC):
         """
         pass
 
+    def get_strategy_info(self) -> str:
+        info = [f"### *{self.name}*", "", f"{self.description}", "", "#### 参数说明："]
 
+        for param_name, (desc, param_type, default) in self.parameters.items():
+            info.append(f"- **{param_name}**：*{desc}*，{param_type.__name__} 类型，默认值 {default}")
+
+        return "\n".join(info)
+
+
+class StrategyRegistry:
+    """
+    策略注册器 - 单例模式
+    """
+    _instance = None
+    _strategies = {}
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(StrategyRegistry, cls).__new__(cls)
+        return cls._instance
+
+    @classmethod
+    def register(cls, strategy_class):
+        """
+        注册策略
+        """
+        if not issubclass(strategy_class, BaseInvestmentStrategy):
+            raise TypeError(f"{strategy_class.__name__} 必须继承 BaseInvestmentStrategy")
+
+        # 使用策略类的名称作为键
+        strategy_name = strategy_class.__name__.replace('Strategy', '')
+        # 转换为更友好的显示名称（例如：DollarCostAveraging -> Dollar Cost Averaging）
+        display_name = ' '.join(re.findall('[A-Z][^A-Z]*', strategy_name))
+        cls._strategies[display_name] = strategy_class
+
+        return strategy_class  # 返回策略类以支持装饰器用法
+
+    @classmethod
+    def get_strategy(cls, strategy_name: str) -> Type[BaseInvestmentStrategy]:
+        """
+        获取策略类
+        """
+        return cls._strategies.get(strategy_name)
+
+    @classmethod
+    def get_strategy_names(cls) -> List[str]:
+        """
+        获取所有已注册的策略名称
+        """
+        return list(cls._strategies.keys())
+
+    @classmethod
+    def create_strategy(cls, strategy_name: str) -> BaseInvestmentStrategy:
+        """
+        创建策略实例
+        """
+        strategy_class = cls.get_strategy(strategy_name)
+        if strategy_class is None:
+            raise ValueError(f"未知的策略: {strategy_name}")
+        return strategy_class()
+
+
+@StrategyRegistry.register
 class DollarCostAveragingStrategy(BaseInvestmentStrategy):
     """
     定投策略实现
     """
-    def __init__(self, monthly_investment: int = 2000):
-        self.monthly_investment = monthly_investment
+    def __init__(self):
+        super().__init__()
+        self.name = "定投策略"
+        self.description = "每月固定日期投入固定金额购买资产，长期持有，以降低择时风险。"
+        self.parameters = {
+            'monthly_investment': ('每月定投金额', float, 2000)
+        }
 
-    def apply(self, data: pd.Series, initial_investment: float) -> pd.Series:
+    def apply(self, data: pd.Series, initial_investment: float, monthly_investment: float = 2000) -> pd.Series:
         # 初始投资份额
         shares = initial_investment / data.iloc[0]
         daily_target_shares = [shares]
 
         for date in data.index[1:]:
             if date.day == 1:  # 每月1日定投
-                shares += self.monthly_investment / data.loc[date]
+                shares += monthly_investment / data.loc[date]
             daily_target_shares.append(shares)
 
         return pd.Series(daily_target_shares, index=data.index)
 
 
+@StrategyRegistry.register
 class TrendFollowingStrategy(BaseInvestmentStrategy):
     """
     趋势跟随策略实现：不赚最后一个铜板
     """
+    def __init__(self):
+        super().__init__()
+        self.name = "趋势跟随策略"
+        self.description = "通过长期均线判断趋势，在上升趋势确认时买入，下降趋势确认时卖出，以避免追涨杀跌。"
+        self.parameters = {
+            'long_window': ('长期均线窗口大小（天数）', int, 200),
+            'confirmation_days': ('趋势确认的天数（连续上涨/下跌的天数）', int, 10)
+        }
 
-    def __init__(self, long_window: int = 200, confirmation_days: int = 10):
-        """
-        :param long_window: 长期均线窗口大小（天数）
-        :param confirmation_days: 趋势确认的天数（连续上涨/下跌的天数）
-        """
-        self.long_window = long_window
-        self.confirmation_days = confirmation_days
-
-    def apply(self, data: pd.Series, initial_investment: float) -> pd.Series:
+    def apply(self, data: pd.Series, initial_investment: float, long_window: int = 200, confirmation_days: int = 10) -> pd.Series:
         """
         策略实现逻辑
+        :param long_window: 长期均线窗口大小（天数）
+        :param confirmation_days: 趋势确认的天数（连续上涨/下跌的天数）
         :param data: 时间序列数据（资产价格）
         :param initial_investment: 初始投资金额
         :return: 每日资产份额的时间序列
         """
         # 计算长期均线
-        long_ma = data.rolling(window=self.long_window).mean()
+        long_ma = data.rolling(window=long_window).mean()
 
         # 初始化变量
         shares = 0  # 当前持仓（份额）
@@ -216,7 +293,7 @@ class TrendFollowingStrategy(BaseInvestmentStrategy):
 
         # 遍历价格数据，逐日计算
         for i in range(len(data)):
-            if i < self.long_window:  # 均线未计算完成时，跳过
+            if i < long_window:  # 均线未计算完成时，跳过
                 daily_target_shares.append(shares)
                 continue
 
@@ -225,9 +302,9 @@ class TrendFollowingStrategy(BaseInvestmentStrategy):
             current_ma = long_ma.iloc[i]
 
             # 判断趋势信号
-            if current_price > current_ma and all(data.iloc[i - self.confirmation_days:i] > current_ma):
+            if current_price > current_ma and all(data.iloc[i - confirmation_days:i] > current_ma):
                 signal = "buy"  # 确认上涨趋势
-            elif current_price < current_ma and all(data.iloc[i - self.confirmation_days:i] < current_ma):
+            elif current_price < current_ma and all(data.iloc[i - confirmation_days:i] < current_ma):
                 signal = "sell"  # 确认下跌趋势
             else:
                 signal = None  # 无交易信号
@@ -255,6 +332,20 @@ class BacktestSystem:
     """
     通用回测系统，支持动态策略类。
     """
+    @staticmethod
+    def filter_strategy_params(strategy: BaseInvestmentStrategy, params: dict) -> dict:
+        """
+        过滤出策略 apply 方法所需的参数
+        """
+        # 获取 apply 方法的参数列表
+        sig = inspect.signature(strategy.apply)
+        # 获取所有参数名（不包括 self 和 data）
+        valid_params = [param.name for param in sig.parameters.values()
+                        if param.name not in ['self', 'data']]
+
+        # 只保留策略所需的参数
+        filtered_params = {k: v for k, v in params.items() if k in valid_params}
+        return filtered_params
 
     @staticmethod
     def backtest(
@@ -272,6 +363,8 @@ class BacktestSystem:
         :param end_date: 回测结束日期（可选，str 或 datetime）
         :return:  回测结果 DataFrame 和交易记录 trade_log
         """
+        # 过滤策略参数
+        strategy_params = BacktestSystem.filter_strategy_params(strategy, kwargs)
 
         # 如果指定了时间范围，裁剪数据
         if start_date:
@@ -297,7 +390,10 @@ class BacktestSystem:
         trade_log = []  # 记录交易信息
 
         # 获取策略的每日目标持仓份额
-        daily_target_shares = strategy.apply(data, **kwargs)
+        try:
+            daily_target_shares = strategy.apply(data, **strategy_params)
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"### 策略参数错误\n{str(e)}")
 
         # 回测逻辑
         for date, price in data.items():
@@ -504,6 +600,7 @@ class InvestmentManager:
         self.symbols = ["518800.SS", "^IXIC", "BTC-USD"]
         self.names = ["Gold", "NASDAQ", "BTC"]
         self.time_ranges = list(TIME_RANGES.keys())
+        self.strategy_registry = StrategyRegistry()
 
         # 初始化数据
         self.data_loader = DataLoader(self.symbols)
@@ -530,31 +627,31 @@ class InvestmentManager:
 
     def execute_backtest(self,
                          asset_name: str,
-                         strategy_type: str,
-                         initial_investment: float,
+                         strategy_name: str,
                          start_date: str = None,
-                         end_date: str = None) -> Tuple[pd.DataFrame, List[Dict], Dict]:
+                         end_date: str = None,
+                         **strategy_params) -> Tuple[pd.DataFrame, List[Dict], Dict]:
         """
         执行回测并返回结果
+        :param asset_name: 资产名称
+        :param strategy_name: 策略名称
+        :param start_date: 开始日期
+        :param end_date: 结束日期
+        :param strategy_params: 策略参数，会传递给具体的策略实例
         :return: (回测结果, 交易记录, 回测指标)
         """
         # 获取资产数据
         asset_prices = self.get_asset_data(asset_name)
 
         # 创建策略实例
-        if strategy_type == "Dollar Cost Averaging":
-            strategy = DollarCostAveragingStrategy()
-        else:  # Trend Following
-            strategy = TrendFollowingStrategy()
-
-        kwargs = {"initial_investment": initial_investment}
+        strategy = self.strategy_registry.create_strategy(strategy_name)
 
         # 执行回测
         results, trade_log = BacktestSystem.backtest(
             asset_prices, strategy,
             start_date=start_date,
             end_date=end_date,
-            **kwargs
+            **strategy_params
         )
 
         # 计算回测指标
@@ -569,6 +666,50 @@ class InvestmentManager:
 
 def create_gradio_interface():
     manager = InvestmentManager()
+
+    def update_strategy_info(strategy_name: str) -> str:
+        """
+        更新策略说明
+        """
+        strategy = manager.strategy_registry.create_strategy(strategy_name)
+        return strategy.get_strategy_info()
+
+    def parse_strategy_params(yaml_text: str) -> dict:
+        """
+        解析策略参数并验证参数类型
+        返回：(参数字典, 错误信息)
+        """
+        if not yaml_text or yaml_text.strip() == "":
+            return {}
+
+        # 尝试解析为YAML格式
+        try:
+            params = yaml.safe_load(yaml_text)
+            if isinstance(params, dict):
+                return params
+        except yaml.YAMLError:
+            pass
+
+        # 尝试解析为键值对格式
+        try:
+            params = {}
+            for line in yaml_text.strip().split('\n'):
+                line = line.strip()
+                if line and '=' in line:
+                    key, value = line.split('=', 1)
+                    key = key.strip()
+                    value = value.strip()
+                    try:
+                        if value.isdigit():
+                            value = int(value)
+                        else:
+                            value = float(value)
+                    except ValueError:
+                        pass
+                    params[key] = value
+            return params
+        except Exception:
+            return {}
 
     def format_metrics(results: pd.DataFrame, metrics: Dict) -> str:
         """格式化关键指标显示"""
@@ -641,36 +782,50 @@ def create_gradio_interface():
     def run_backtest_analysis(asset_name: str,
                               strategy_type: str,
                               initial_investment: float,
+                              strategy_params: str = None,
                               start_date: str = None,
                               end_date: str = None) -> Tuple[plt.Figure, plt.Figure, str]:
         """回测分析"""
-        # 验证并调整日期范围
-        start_date, end_date = validate_dates(start_date, end_date)
+        try:
+            # 检查必要参数
+            if asset_name is None:
+                raise ValueError("### 请选择投资对象")
+            if strategy_type is None:
+                raise ValueError("### 请选择投资策略")
 
-        # 执行回测
-        results, trade_log, metrics = manager.execute_backtest(
-            asset_name, strategy_type,
-            initial_investment,
-            start_date, end_date
-        )
+            # 验证并调整日期范围
+            start_date, end_date = validate_dates(start_date, end_date)
 
-        # 生成图表
-        backtest_fig = Visualization.plot_backtest_results(
-            results, metrics['max_drawdown'],
-            f"Backtest Results for {asset_name}"
-        )
-        trades_fig = Visualization.plot_trades(
-            manager.get_asset_data(asset_name),
-            trade_log,
-            f"Trades for {asset_name}",
-            start_date, end_date
-        )
+            # 解析策略参数
+            params = parse_strategy_params(strategy_params)
+            params['initial_investment'] = initial_investment
 
-        # 生成指标报告
-        metrics_text = format_metrics(results, metrics)
-        trade_log_text = format_trade_log(trade_log)
+            # 执行回测
+            results, trade_log, metrics = manager.execute_backtest(
+                asset_name, strategy_type,
+                start_date, end_date,
+                **params
+            )
 
-        return backtest_fig, trades_fig, metrics_text, trade_log_text
+            # 生成图表和报告
+            backtest_fig = Visualization.plot_backtest_results(
+                results, metrics['max_drawdown'],
+                f"Backtest Results for {asset_name}"
+            )
+            trades_fig = Visualization.plot_trades(
+                manager.get_asset_data(asset_name),
+                trade_log,
+                f"Trades for {asset_name}",
+                start_date, end_date
+            )
+
+            metrics_text = format_metrics(results, metrics)
+            trade_log_text = format_trade_log(trade_log)
+
+            return backtest_fig, trades_fig, metrics_text, trade_log_text
+
+        except ValueError as e:
+            return None, None, f"{str(e)}", ""
 
     # 预先生成默认资产(Gold)的图表
     default_plot = analyze_asset(manager.names[0], "全部")
@@ -704,32 +859,52 @@ def create_gradio_interface():
                         backtest_asset = gr.Dropdown(
                             choices=manager.names,
                             label="投资对象",
-                            value=manager.names[0]
+                            value=None
                         )
                     with gr.Column(scale=1):
                         strategy = gr.Dropdown(
-                            choices=["Dollar Cost Averaging", "Trend Following"],
+                            choices=StrategyRegistry.get_strategy_names(),
                             label="投资策略",
-                            value="Dollar Cost Averaging"
+                            value=None
                         )
 
                 with gr.Row():
                     with gr.Column(scale=1):
                         start_date = gr.DateTime(
-                            label="开始日期",
+                            label="开始日期(可选)",
                             include_time=False,
                             type="string",
                         )
                     with gr.Column(scale=1):
                         end_date = gr.DateTime(
-                            label="结束日期",
+                            label="结束日期(可选)",
                             include_time=False,
                             type="string",
                         )
                     with gr.Column(scale=1):
                         initial_inv = gr.Number(
                             label="初始投资额",
-                            value=30000
+                            value=10000,
+                            minimum=1
+                        )
+
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        strategy_params = gr.Textbox(
+                            label="策略参数(可选)",
+                            placeholder=(
+                                "示例:\n"
+                                "long_window=200\n"
+                                "confirmation_days=10\n"
+                                "或:\n"
+                                "long_window: 200\n"
+                                "confirmation_days: 10"
+                            ),
+                            lines=5
+                        )
+                    with gr.Column(scale=1):
+                        strategy_info = gr.Markdown(
+                            label="策略说明"
                         )
 
                 run_btn = gr.Button("运行回测")
@@ -748,6 +923,12 @@ def create_gradio_interface():
                             label="交易记录"
                         )
 
+                strategy.change(
+                    update_strategy_info,
+                    inputs=[strategy],
+                    outputs=[strategy_info]
+                )
+
                 asset_selector.change(
                     analyze_asset,
                     inputs=[asset_selector, time_range_selector],
@@ -764,6 +945,7 @@ def create_gradio_interface():
                         backtest_asset,
                         strategy,
                         initial_inv,
+                        strategy_params,
                         start_date,
                         end_date
                     ],
