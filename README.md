@@ -54,9 +54,8 @@ docker run lifu963/easy-trader:v2.0
 只需三步即可添加新策略：
 
 1. 在 strategies/ 目录下创建新策略类
-2. 继承 BaseInvestmentStrategy
-3. 实现 apply 方法
-4. 在 strategies/__init__.py 中导入
+2. 继承 BaseInvestmentStrategy，实现 apply 方法
+3. 在 strategies/__init__.py 中导入
 
 ```python
 @StrategyRegistry.register
