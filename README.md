@@ -49,11 +49,11 @@ docker run lifu963/easy-trader:v2.0
 
 ### 资产价格展示
 
-<img width="884" alt="8f2edaaad72065e8e10595510eae627" src="https://github.com/user-attachments/assets/4e8f7665-cf22-4ec3-81bf-2335f1137f75" />
+<img width="872" alt="dc5ca0f802613d6c96ea145aca3f99f" src="https://github.com/user-attachments/assets/aa779d92-ea56-4c12-9818-a2f27b6f7c81" />
 
 ### 回测投资策略
 
-<img width="884" alt="e1ba50bee4a7fc8624abf0c1e6168e0" src="https://github.com/user-attachments/assets/5782243e-64fe-452c-926d-52a90f0fa2d2" />
+<img width="869" alt="3cfe7bd12641f9273a79db7c6b435c0" src="https://github.com/user-attachments/assets/f425413c-7894-4a0d-84fb-8fc5b52739e6" />
 
 ### 回测结果展示
 
